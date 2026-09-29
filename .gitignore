@@ -1,0 +1,4 @@
+.build/
+.test-tmp/
+AppWrapper.app/
+.DS_Store
