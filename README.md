@@ -64,7 +64,7 @@ swift run --disable-sandbox AppWrapper
 ## CLI 模式
 
 ```sh
-AppWrapper --cli config.json
+./AppWrapper.app/Contents/MacOS/AppWrapper --cli config.json
 ```
 
 ```json
