@@ -16,6 +16,13 @@ enum BundleBuilder {
         }
         let appName = config.appName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !appName.isEmpty else { throw BuildError("App 名称不能为空") }
+        guard !appName.contains("/"), !appName.contains(":"),
+              !appName.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+            throw BuildError("App 名称不能包含路径分隔符或控制字符")
+        }
+        guard (try execURL.resolvingSymlinksInPath().resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true else {
+            throw BuildError("主可执行文件必须是普通文件")
+        }
         guard !config.bundleID.trimmingCharacters(in: .whitespaces).isEmpty else {
             throw BuildError("Bundle Identifier 不能为空")
         }
@@ -33,11 +40,12 @@ enum BundleBuilder {
         log("主文件: \(execURL.path)（\(isMachO ? "Mach-O 二进制" : "脚本/其他")）")
 
         // ---------- 1. 创建 bundle 目录结构 ----------
-        let appURL = config.outputDirectory.appendingPathComponent("\(appName).app")
-        if fm.fileExists(atPath: appURL.path) {
-            log("删除已存在的 \(appURL.lastPathComponent)")
-            try fm.removeItem(at: appURL)
-        }
+        let finalURL = config.outputDirectory.appendingPathComponent("\(appName).app")
+        try fm.createDirectory(at: config.outputDirectory, withIntermediateDirectories: true)
+        let stagingURL = config.outputDirectory.appendingPathComponent(".AppWrapper-\(UUID().uuidString)")
+        try fm.createDirectory(at: stagingURL, withIntermediateDirectories: false)
+        defer { try? fm.removeItem(at: stagingURL) }
+        let appURL = stagingURL.appendingPathComponent("\(appName).app")
         let contentsURL = appURL.appendingPathComponent("Contents")
         let macosURL = contentsURL.appendingPathComponent("MacOS")
         let resourcesURL = contentsURL.appendingPathComponent("Resources")
@@ -118,11 +126,12 @@ enum BundleBuilder {
         let launcherName = sanitizedLauncherName(from: appName)
         var script = config.script
         if script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            script = ScriptTemplate.make(executableName: execName)
+            script = ScriptTemplate.make()
         }
         script = script
             .replacingOccurrences(of: ScriptTemplate.tokenExecutable, with: execName)
             .replacingOccurrences(of: ScriptTemplate.tokenAppName, with: appName)
+            .replacingOccurrences(of: ScriptTemplate.tokenQuotedExecutable, with: ScriptTemplate.shellQuote(execName))
         if !script.hasPrefix("#!") {
             script = "#!/bin/zsh\n" + script
         }
@@ -189,7 +198,24 @@ enum BundleBuilder {
             }
         }
 
-        return appURL
+        // Only replace an existing bundle after assembly succeeds; roll back a failed move.
+        let backupURL = config.outputDirectory.appendingPathComponent(".AppWrapper-backup-\(UUID().uuidString)")
+        let hadPrevious = (try? fm.attributesOfItem(atPath: finalURL.path)) != nil
+        if hadPrevious { try fm.moveItem(at: finalURL, to: backupURL) }
+        do {
+            try fm.moveItem(at: appURL, to: finalURL)
+        } catch {
+            if hadPrevious {
+                do { try fm.moveItem(at: backupURL, to: finalURL) }
+                catch { throw BuildError("恢复旧产物失败，备份位于 \(backupURL.path): \(error.localizedDescription)") }
+            }
+            throw error
+        }
+        if hadPrevious {
+            do { try fm.removeItem(at: backupURL) }
+            catch { log("⚠️ 旧产物备份未能删除: \(backupURL.path)") }
+        }
+        return finalURL
     }
 
     // MARK: - 辅助

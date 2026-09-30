@@ -42,7 +42,8 @@ final class WrapperViewModel: ObservableObject {
             bundleID = "com.example.\(baseName.lowercased().filter { $0.isLetter || $0.isNumber })"
             if bundleID == "com.example." { bundleID = "com.example.myapp" }
         }
-        if script.contains(ScriptTemplate.tokenExecutable)
+        if script.contains(ScriptTemplate.tokenQuotedExecutable)
+            || script.contains(ScriptTemplate.tokenExecutable)
             || script.contains("your-executable")
             || script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             script = ScriptTemplate.make(executableName: ScriptTemplate.tokenExecutable)
@@ -273,7 +274,7 @@ struct ContentView: View {
                     .frame(minHeight: 220)
                     .border(Color.secondary.opacity(0.3))
                 HStack {
-                    Text("占位符 \(ScriptTemplate.tokenExecutable) 会在打包时替换为主文件名")
+                    Text("\(ScriptTemplate.tokenQuotedExecutable) 替换为安全引用的文件名；\(ScriptTemplate.tokenExecutable) 保留原始替换")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()

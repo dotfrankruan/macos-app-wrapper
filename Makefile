@@ -68,12 +68,15 @@ test: debug       ## 端到端测试：打包一个带 dylib 依赖的 C 程序�
 	  '  "outputDirectory": "$(CURDIR)/$(TEST_DIR)/out"' \
 	  '}' > "$(TEST_DIR)/config.json"
 	"$(DEBUG_BIN)" --cli "$(TEST_DIR)/config.json"
+	@mv "$(TEST_DIR)/src" "$(TEST_DIR)/src-hidden"
 	@echo "==> 运行打包产物并校验输出"
 	@OUTPUT=$$("$(TEST_DIR)/out/HelloTest.app/Contents/MacOS/HelloTest"); \
 	echo "    输出: $$OUTPUT"; \
 	test "$$OUTPUT" = "hello from bundled libfoo" \
 	  && echo "==> ✅ 端到端测试通过" \
 	  || { echo "==> ❌ 测试失败"; exit 1; }
+
+	python3 Tests/regression.py "$(DEBUG_BIN)"
 
 clean:            ## 清理构建产物与测试文件
 	rm -rf .build "$(TEST_DIR)" "$(APP)"

@@ -18,10 +18,17 @@ struct BuildConfig {
 /// 启动脚本模板。构建时会把 {{EXECUTABLE_NAME}} / {{APP_NAME}} 替换为真实值。
 enum ScriptTemplate {
     static let tokenExecutable = "{{EXECUTABLE_NAME}}"
+    static let tokenQuotedExecutable = "{{SHELL_EXECUTABLE_NAME}}"
+
+    static func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
+
     static let tokenAppName = "{{APP_NAME}}"
 
     static func make(executableName: String = ScriptTemplate.tokenExecutable) -> String {
-        """
+        let name = executableName == tokenExecutable ? tokenQuotedExecutable : shellQuote(executableName)
+        return """
         #!/bin/zsh
         # ============================================================
         #  启动脚本 —— 由 AppWrapper 生成，可自由修改
@@ -43,7 +50,7 @@ enum ScriptTemplate {
         # export JAVA_HOME="$(/usr/libexec/java_home -v 21 2>/dev/null || true)"
 
         cd "$PAYLOAD_DIR"
-        exec "$PAYLOAD_DIR/\(executableName)" "$@"
+        exec "$PAYLOAD_DIR/"\(name) "$@"
         """
     }
 }
