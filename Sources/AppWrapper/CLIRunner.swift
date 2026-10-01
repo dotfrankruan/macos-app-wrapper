@@ -1,6 +1,6 @@
 import Foundation
 
-/// 无界面打包：`AppWrapper --cli config.json`
+/// 无界面打包：`AppWrapper --cli config.json [--lang zh|en]`
 /// 方便自动化测试与脚本调用。config.json 示例见 README。
 enum CLIRunner {
 
@@ -20,9 +20,23 @@ enum CLIRunner {
     }
 
     static func run(arguments: [String]) async -> Int32 {
+        // 先处理 --lang，让后续日志/错误使用该语言
+        if let langIndex = arguments.firstIndex(of: "--lang"),
+           langIndex + 1 < arguments.count {
+            let value = arguments[langIndex + 1].lowercased()
+            let language: AppLanguage? = switch value {
+            case "zh", "zh-hans", "cn": .zhHans
+            case "en", "english": .english
+            default: nil
+            }
+            if let language {
+                UserDefaults.standard.set(language.rawValue, forKey: "appLanguage")
+            }
+        }
+
         guard let index = arguments.firstIndex(of: "--cli"),
               index + 1 < arguments.count else {
-            FileHandle.standardError.write(Data("用法: AppWrapper --cli <config.json>\n".utf8))
+            FileHandle.standardError.write(Data((L.cliUsage + "\n").utf8))
             return 2
         }
 
@@ -32,7 +46,7 @@ enum CLIRunner {
             let data = try Data(contentsOf: configURL)
             cliConfig = try JSONDecoder().decode(CLIConfig.self, from: data)
         } catch {
-            FileHandle.standardError.write(Data("❌ 读取配置失败: \(error.localizedDescription)\n".utf8))
+            FileHandle.standardError.write(Data((L.cliConfigFailed(error.localizedDescription) + "\n").utf8))
             return 2
         }
 
@@ -41,7 +55,7 @@ enum CLIRunner {
             do {
                 script = try String(contentsOf: URL(fileURLWithPath: scriptFile), encoding: .utf8)
             } catch {
-                FileHandle.standardError.write(Data("❌ 读取脚本文件失败: \(error.localizedDescription)\n".utf8))
+                FileHandle.standardError.write(Data((L.cliScriptFailed(error.localizedDescription) + "\n").utf8))
                 return 2
             }
         }
@@ -62,10 +76,10 @@ enum CLIRunner {
 
         do {
             let appURL = try BundleBuilder.build(config: config) { print($0) }
-            print("✅ 打包完成: \(appURL.path)")
+            print(L.logDone(appURL.path))
             return 0
         } catch {
-            FileHandle.standardError.write(Data("❌ 打包失败: \(error.localizedDescription)\n".utf8))
+            FileHandle.standardError.write(Data((L.logFailed(error.localizedDescription) + "\n").utf8))
             return 1
         }
     }

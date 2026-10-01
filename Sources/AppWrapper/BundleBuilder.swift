@@ -1,6 +1,7 @@
 import Foundation
 
 /// 负责把可执行文件 + 依赖 + 启动脚本组装成 .app bundle
+/// Assembles the executable, its dependencies and the launch script into a .app bundle.
 enum BundleBuilder {
 
     /// 执行打包。成功返回生成的 .app 路径。
@@ -9,37 +10,37 @@ enum BundleBuilder {
                       log: @escaping @Sendable (String) -> Void) throws -> URL {
         let fm = FileManager.default
 
-        // ---------- 0. 校验输入 ----------
+        // ---------- 0. 校验输入 / Validate inputs ----------
         let execURL = config.executableURL
         guard fm.fileExists(atPath: execURL.path) else {
-            throw BuildError("可执行文件不存在: \(execURL.path)")
+            throw BuildError(L.errExecutableMissing(execURL.path))
         }
         let appName = config.appName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !appName.isEmpty else { throw BuildError("App 名称不能为空") }
+        guard !appName.isEmpty else { throw BuildError(L.errAppNameEmpty) }
         guard !appName.contains("/"), !appName.contains(":"),
               !appName.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
-            throw BuildError("App 名称不能包含路径分隔符或控制字符")
+            throw BuildError(L.errAppNameInvalid)
         }
         guard (try execURL.resolvingSymlinksInPath().resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true else {
-            throw BuildError("主可执行文件必须是普通文件")
+            throw BuildError(L.errExecutableNotRegularFile)
         }
         guard !config.bundleID.trimmingCharacters(in: .whitespaces).isEmpty else {
-            throw BuildError("Bundle Identifier 不能为空")
+            throw BuildError(L.errBundleIDEmpty)
         }
         for item in config.additionalItems {
             guard fm.fileExists(atPath: item.path) else {
-                throw BuildError("附加文件不存在: \(item.path)")
+                throw BuildError(L.errAdditionalMissing(item.path))
             }
             if item.lastPathComponent == execURL.lastPathComponent {
-                throw BuildError("附加文件「\(item.lastPathComponent)」与主可执行文件重名，请先改名")
+                throw BuildError(L.errNameConflict(item.lastPathComponent))
             }
         }
 
         let execName = execURL.lastPathComponent
         let isMachO = DependencyScanner.isMachO(execURL)
-        log("主文件: \(execURL.path)（\(isMachO ? "Mach-O 二进制" : "脚本/其他")）")
+        log(L.logMainFile(execURL.path, isMachO: isMachO))
 
-        // ---------- 1. 创建 bundle 目录结构 ----------
+        // ---------- 1. 在临时目录中创建 bundle 结构 / Stage the bundle ----------
         let finalURL = config.outputDirectory.appendingPathComponent("\(appName).app")
         try fm.createDirectory(at: config.outputDirectory, withIntermediateDirectories: true)
         let stagingURL = config.outputDirectory.appendingPathComponent(".AppWrapper-\(UUID().uuidString)")
@@ -62,51 +63,51 @@ enum BundleBuilder {
         try fm.copyItem(at: resolvedExecURL, to: payloadExecURL)
         makeExecutable(payloadExecURL)
         if resolvedExecURL != execURL {
-            log("主文件是符号链接，已解析为 \(resolvedExecURL.path)")
+            log(L.logSymlinkResolved(resolvedExecURL.path))
         }
-        log("已拷贝主文件 → Resources/payload/\(execName)")
+        log(L.logCopiedMain(execName))
 
         for item in config.additionalItems {
             let dest = payloadURL.appendingPathComponent(item.lastPathComponent)
             if fm.fileExists(atPath: dest.path) {
-                throw BuildError("目标已存在同名文件: payload/\(item.lastPathComponent)，打包中止")
+                throw BuildError(L.errDestConflict(item.lastPathComponent))
             }
             var isDirectory: ObjCBool = false
             fm.fileExists(atPath: item.path, isDirectory: &isDirectory)
             let source = isDirectory.boolValue ? item : item.resolvingSymlinksInPath()
             try fm.copyItem(at: source, to: dest)
-            log("已拷贝附加项 → Resources/payload/\(item.lastPathComponent)")
+            log(L.logCopiedAdditional(item.lastPathComponent))
         }
 
         // ---------- 3. 扫描并拷贝动态库依赖 ----------
         var bundledDeps: [ScannedDependency] = []
         if config.copyDependencies {
             if isMachO {
-                log("正在扫描动态库依赖…")
+                log(L.logScanning)
                 // 注意：必须扫描原始位置的文件，这样 @rpath/@executable_path 才能解析到依赖的真实位置
                 let (deps, missing) = DependencyScanner.scan(root: execURL, log: log)
                 bundledDeps = deps
                 if deps.isEmpty {
-                    log("未发现需要打包的非系统依赖")
+                    log(L.logNoDeps)
                 }
                 for dep in deps {
                     let dest = frameworksURL.appendingPathComponent(dep.bundledName)
                     let source = dep.resolvedURL.resolvingSymlinksInPath()
                     try fm.copyItem(at: source, to: dest)
                     makeExecutable(dest)
-                    log("已打包依赖: \(dep.installName) → Frameworks/\(dep.bundledName)")
+                    log(L.logCopiedDep(dep.installName, dep.bundledName))
                 }
                 if !missing.isEmpty {
-                    log("⚠️ 有 \(missing.count) 个依赖未能解析，运行时可能需要系统自行提供")
+                    log(L.logMissingDeps(missing.count))
                 }
             } else {
-                log("主文件不是 Mach-O 二进制，跳过依赖扫描")
+                log(L.logNotMachOSkip)
             }
         }
 
         // ---------- 4. 改写 install name / rpath ----------
         if config.fixInstallNames, !bundledDeps.isEmpty {
-            log("正在改写动态库加载路径…")
+            log(L.logRewriting)
             let changes = bundledDeps.map {
                 (old: $0.installName, new: "@rpath/\($0.bundledName)")
             }
@@ -138,7 +139,7 @@ enum BundleBuilder {
         let launcherURL = macosURL.appendingPathComponent(launcherName)
         try script.write(to: launcherURL, atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: launcherURL.path)
-        log("启动脚本 → MacOS/\(launcherName)")
+        log(L.logScriptWritten(launcherName))
 
         // ---------- 6. 图标（可选） ----------
         var iconFileName: String? = nil
@@ -147,14 +148,14 @@ enum BundleBuilder {
             if iconURL.pathExtension.lowercased() == "icns" {
                 try fm.copyItem(at: iconURL, to: iconDest)
                 iconFileName = "AppIcon"
-                log("已拷贝图标 AppIcon.icns")
+                log(L.logIconCopied)
             } else if ["png"].contains(iconURL.pathExtension.lowercased()) {
-                log("正在把 PNG 转换为 icns…")
+                log(L.logIconConverting)
                 try convertPNGToICNS(png: iconURL, icns: iconDest, log: log)
                 iconFileName = "AppIcon"
-                log("已生成图标 AppIcon.icns")
+                log(L.logIconDone)
             } else {
-                log("⚠️ 不支持的图标格式（仅支持 .icns / .png），已忽略")
+                log(L.logIconUnsupported)
             }
         }
 
@@ -174,12 +175,12 @@ enum BundleBuilder {
         let plistData = try PropertyListSerialization.data(
             fromPropertyList: plist, format: .xml, options: 0)
         try plistData.write(to: contentsURL.appendingPathComponent("Info.plist"))
-        log("已写入 Info.plist")
+        log(L.logPlistWritten)
 
         // ---------- 8. 签名 ----------
         // 改过 install name 的 Mach-O 在 Apple Silicon 上必须重新（至少 ad-hoc）签名
         if config.adhocSign {
-            log("正在进行 ad-hoc 签名…")
+            log(L.logSigning)
             for dep in bundledDeps {
                 let dylibURL = frameworksURL.appendingPathComponent(dep.bundledName)
                 _ = DependencyScanner.runTool("/usr/bin/codesign",
@@ -192,9 +193,9 @@ enum BundleBuilder {
             let (status, out) = DependencyScanner.runTool(
                 "/usr/bin/codesign", ["--force", "--deep", "--sign", "-", appURL.path])
             if status == 0 {
-                log("签名完成")
+                log(L.logSignDone)
             } else {
-                log("⚠️ 签名失败（不影响 bundle 结构，但可能无法直接运行）: \(out)")
+                log(L.logSignFailed(out))
             }
         }
 
@@ -207,18 +208,18 @@ enum BundleBuilder {
         } catch {
             if hadPrevious {
                 do { try fm.moveItem(at: backupURL, to: finalURL) }
-                catch { throw BuildError("恢复旧产物失败，备份位于 \(backupURL.path): \(error.localizedDescription)") }
+                catch { throw BuildError(L.errRestoreFailed(backupURL.path, error.localizedDescription)) }
             }
             throw error
         }
         if hadPrevious {
             do { try fm.removeItem(at: backupURL) }
-            catch { log("⚠️ 旧产物备份未能删除: \(backupURL.path)") }
+            catch { log(L.logBackupCleanupFailed(backupURL.path)) }
         }
         return finalURL
     }
 
-    // MARK: - 辅助
+    // MARK: - 辅助 / Helpers
 
     private static func makeExecutable(_ url: URL) {
         let fm = FileManager.default
@@ -263,16 +264,17 @@ enum BundleBuilder {
                 retryArgs.append(binary.path)
                 (status, out) = DependencyScanner.runTool("/usr/bin/install_name_tool", retryArgs)
                 if status == 0 {
-                    log("⚠️ \(binary.lastPathComponent) 空间不足无法添加 rpath，已仅改写 install name（由启动脚本兜底加载路径）")
+                    log(L.logHeaderpadRetry(binary.lastPathComponent))
                     return
                 }
             } else {
-                log("ℹ️ \(binary.lastPathComponent) 装载命令空间不足，rpath 未添加；将依赖启动脚本的 DYLD_FALLBACK_LIBRARY_PATH 加载包内依赖库")
+                log(L.logHeaderpadFallback(binary.lastPathComponent))
                 return
             }
         }
         if status != 0 {
-            log("⚠️ install_name_tool 处理 \(binary.lastPathComponent) 时出现警告: \(out.trimmingCharacters(in: .whitespacesAndNewlines))")
+            log(L.logInstallNameToolWarning(binary.lastPathComponent,
+                                            out.trimmingCharacters(in: .whitespacesAndNewlines)))
         }
     }
 
@@ -298,13 +300,13 @@ enum BundleBuilder {
             let (status, out) = DependencyScanner.runTool(
                 "/usr/bin/sips", ["-z", "\(pixels)", "\(pixels)", png.path, "--out", dest.path])
             if status != 0 {
-                log("⚠️ sips 生成 \(name) 失败: \(out.trimmingCharacters(in: .whitespacesAndNewlines))")
+                log(L.logSipsWarning(name, out.trimmingCharacters(in: .whitespacesAndNewlines)))
             }
         }
         let (status, out) = DependencyScanner.runTool(
             "/usr/bin/iconutil", ["-c", "icns", iconsetURL.path, "-o", icns.path])
         guard status == 0 else {
-            throw BuildError("iconutil 转换失败: \(out.trimmingCharacters(in: .whitespacesAndNewlines))")
+            throw BuildError(L.errIconutil(out.trimmingCharacters(in: .whitespacesAndNewlines)))
         }
     }
 }

@@ -167,7 +167,7 @@ enum DependencyScanner {
                     let marker = "MISSING:" + name
                     if visited.insert(marker).inserted {
                         missing.append(name)
-                        log("⚠️ 无法解析依赖: \(name)（被 \(current.lastPathComponent) 引用）")
+                        log(L.logUnresolvedDep(name, current.lastPathComponent))
                     }
                 }
             }

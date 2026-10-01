@@ -25,11 +25,11 @@ final class WrapperViewModel: ObservableObject {
         log += message
     }
 
-    // MARK: 选择文件
+    // MARK: File pickers
 
     func pickExecutable() {
         let panel = NSOpenPanel()
-        panel.title = "选择要打包的可执行文件"
+        panel.title = L.pickExecutableTitle
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
@@ -52,7 +52,7 @@ final class WrapperViewModel: ObservableObject {
 
     func pickAdditionalItems(chooseDirectories: Bool) {
         let panel = NSOpenPanel()
-        panel.title = chooseDirectories ? "选择文件夹" : "选择文件"
+        panel.title = chooseDirectories ? L.pickFolderTitle : L.pickFilesTitle
         panel.canChooseFiles = !chooseDirectories
         panel.canChooseDirectories = chooseDirectories
         panel.allowsMultipleSelection = true
@@ -68,7 +68,7 @@ final class WrapperViewModel: ObservableObject {
 
     func pickIcon() {
         let panel = NSOpenPanel()
-        panel.title = "选择图标（.icns 或 .png）"
+        panel.title = L.pickIconTitle
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
@@ -78,7 +78,7 @@ final class WrapperViewModel: ObservableObject {
 
     func pickOutputDirectory() {
         let panel = NSOpenPanel()
-        panel.title = "选择输出目录"
+        panel.title = L.pickOutputTitle
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
@@ -91,15 +91,15 @@ final class WrapperViewModel: ObservableObject {
 
     func resetScript() {
         script = ScriptTemplate.make(executableName: ScriptTemplate.tokenExecutable)
-        appendLog("已重置启动脚本为默认模板")
+        appendLog(L.logTemplateReset)
     }
 
-    // MARK: 打包
+    // MARK: Build
 
     func build() {
         guard !isBuilding else { return }
         guard !executablePath.isEmpty else {
-            appendLog("❌ 请先选择可执行文件")
+            appendLog(L.logNeedExecutable)
             return
         }
         let execURL = URL(fileURLWithPath: executablePath)
@@ -107,16 +107,16 @@ final class WrapperViewModel: ObservableObject {
         let appURL = outDir.appendingPathComponent("\(appName).app")
         if FileManager.default.fileExists(atPath: appURL.path) {
             let alert = NSAlert()
-            alert.messageText = "目标已存在"
-            alert.informativeText = "\(appURL.path)\n将被删除并重新生成，是否继续？"
+            alert.messageText = L.alertExistsTitle
+            alert.informativeText = L.alertExistsMessage(appURL.path)
             alert.alertStyle = .warning
-            alert.addButton(withTitle: "覆盖")
-            alert.addButton(withTitle: "取消")
+            alert.addButton(withTitle: L.overwrite)
+            alert.addButton(withTitle: L.cancel)
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
 
         isBuilding = true
-        appendLog("——— 开始打包 \(appName) ———")
+        appendLog(L.logStart(appName))
 
         let config = BuildConfig(
             executableURL: execURL,
@@ -139,13 +139,13 @@ final class WrapperViewModel: ObservableObject {
                 }
                 await MainActor.run {
                     self?.isBuilding = false
-                    self?.appendLog("✅ 打包完成: \(appURL.path)")
+                    self?.appendLog(L.logDone(appURL.path))
                     NSWorkspace.shared.activateFileViewerSelecting([appURL])
                 }
             } catch {
                 await MainActor.run {
                     self?.isBuilding = false
-                    self?.appendLog("❌ 打包失败: \(error.localizedDescription)")
+                    self?.appendLog(L.logFailed(error.localizedDescription))
                 }
             }
         }
@@ -154,10 +154,13 @@ final class WrapperViewModel: ObservableObject {
 
 struct ContentView: View {
     @StateObject private var vm = WrapperViewModel()
+    /// 驱动界面语言切换；改变后 body 重新求值，所有 L.* 文案即时更新
+    @AppStorage("appLanguage") private var language: AppLanguage = .system
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
+                languageBar
                 executableSection
                 additionalFilesSection
                 appInfoSection
@@ -170,20 +173,33 @@ struct ContentView: View {
         }
     }
 
-    // MARK: 可执行文件
+    // MARK: Language
+
+    private var languageBar: some View {
+        HStack {
+            Spacer()
+            Picker(L.language, selection: $language) {
+                ForEach(AppLanguage.allCases) { lang in
+                    Text(L.languageName(lang)).tag(lang)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 280)
+        }
+    }
+
+    // MARK: Executable
 
     private var executableSection: some View {
-        GroupBox("1. 可执行文件") {
+        GroupBox(L.sectionExecutable) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    TextField("选择要打包的可执行文件或脚本", text: $vm.executablePath)
+                    TextField(L.executablePlaceholder, text: $vm.executablePath)
                         .textFieldStyle(.roundedBorder)
-                    Button("选择…") { vm.pickExecutable() }
+                    Button(L.choose) { vm.pickExecutable() }
                 }
                 if !vm.executablePath.isEmpty {
-                    Label(vm.executableIsMachO
-                          ? "Mach-O 二进制 — 将自动扫描动态库依赖"
-                          : "脚本/其他类型 — 跳过依赖扫描（请自行用“附加文件”带上依赖）",
+                    Label(vm.executableIsMachO ? L.machOHint : L.scriptHint,
                           systemImage: vm.executableIsMachO ? "checkmark.seal" : "doc.plaintext")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -193,13 +209,13 @@ struct ContentView: View {
         }
     }
 
-    // MARK: 附加文件
+    // MARK: Additional files
 
     private var additionalFilesSection: some View {
-        GroupBox("2. 附加文件 / 文件夹（随包拷贝到 Resources/payload）") {
+        GroupBox(L.sectionAdditional) {
             VStack(alignment: .leading, spacing: 8) {
                 if vm.additionalItems.isEmpty {
-                    Text("无（如程序运行还需要数据文件、配置、JRE 等，请添加到这里）")
+                    Text(L.noAdditional)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
@@ -221,42 +237,42 @@ struct ContentView: View {
                     .frame(minHeight: 60, maxHeight: 120)
                 }
                 HStack {
-                    Button("添加文件…") { vm.pickAdditionalItems(chooseDirectories: false) }
-                    Button("添加文件夹…") { vm.pickAdditionalItems(chooseDirectories: true) }
+                    Button(L.addFiles) { vm.pickAdditionalItems(chooseDirectories: false) }
+                    Button(L.addFolder) { vm.pickAdditionalItems(chooseDirectories: true) }
                 }
             }
             .padding(6)
         }
     }
 
-    // MARK: App 信息
+    // MARK: App info
 
     private var appInfoSection: some View {
-        GroupBox("3. App 信息") {
+        GroupBox(L.sectionAppInfo) {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
                 GridRow {
-                    Text("名称").frame(width: 110, alignment: .trailing)
+                    Text(L.fieldName).frame(width: 110, alignment: .trailing)
                     TextField("MyApp", text: $vm.appName)
                         .textFieldStyle(.roundedBorder)
                         .onChange(of: vm.appName) { vm.noteAppNameEdited() }
                 }
                 GridRow {
-                    Text("Bundle ID").frame(width: 110, alignment: .trailing)
+                    Text(L.fieldBundleID).frame(width: 110, alignment: .trailing)
                     TextField("com.example.myapp", text: $vm.bundleID)
                         .textFieldStyle(.roundedBorder)
                 }
                 GridRow {
-                    Text("版本").frame(width: 110, alignment: .trailing)
+                    Text(L.fieldVersion).frame(width: 110, alignment: .trailing)
                     TextField("1.0", text: $vm.version)
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 160)
                 }
                 GridRow {
-                    Text("图标（可选）").frame(width: 110, alignment: .trailing)
+                    Text(L.fieldIcon).frame(width: 110, alignment: .trailing)
                     HStack {
-                        TextField(".icns 或 .png", text: $vm.iconPath)
+                        TextField(".icns / .png", text: $vm.iconPath)
                             .textFieldStyle(.roundedBorder)
-                        Button("选择…") { vm.pickIcon() }
+                        Button(L.choose) { vm.pickIcon() }
                     }
                 }
             }
@@ -264,54 +280,54 @@ struct ContentView: View {
         }
     }
 
-    // MARK: 启动脚本
+    // MARK: Launch script
 
     private var scriptSection: some View {
-        GroupBox("4. 启动脚本（将成为 Contents/MacOS/ 下的启动器，可自由编写）") {
+        GroupBox(L.sectionScript) {
             VStack(alignment: .leading, spacing: 8) {
                 TextEditor(text: $vm.script)
                     .font(.system(.body, design: .monospaced))
                     .frame(minHeight: 220)
                     .border(Color.secondary.opacity(0.3))
                 HStack {
-                    Text("\(ScriptTemplate.tokenQuotedExecutable) 替换为安全引用的文件名；\(ScriptTemplate.tokenExecutable) 保留原始替换")
+                    Text(L.placeholderNote)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button("重置为模板") { vm.resetScript() }
+                    Button(L.resetTemplate) { vm.resetScript() }
                 }
             }
             .padding(6)
         }
     }
 
-    // MARK: 选项
+    // MARK: Options
 
     private var optionsSection: some View {
-        GroupBox("5. 打包选项与输出") {
+        GroupBox(L.sectionOptions) {
             VStack(alignment: .leading, spacing: 8) {
-                Toggle("自动收集并打包动态库依赖（otool 递归扫描）", isOn: $vm.copyDependencies)
-                Toggle("改写 install name / rpath 指向包内 Frameworks", isOn: $vm.fixInstallNames)
+                Toggle(L.toggleDeps, isOn: $vm.copyDependencies)
+                Toggle(L.toggleRewrite, isOn: $vm.fixInstallNames)
                     .disabled(!vm.copyDependencies)
-                Toggle("完成后进行 ad-hoc 签名（Apple Silicon 建议开启）", isOn: $vm.adhocSign)
+                Toggle(L.toggleSign, isOn: $vm.adhocSign)
                 HStack {
-                    Text("输出目录").frame(width: 110, alignment: .trailing)
+                    Text(L.outputDir).frame(width: 110, alignment: .trailing)
                     TextField("", text: $vm.outputDirectory)
                         .textFieldStyle(.roundedBorder)
-                    Button("选择…") { vm.pickOutputDirectory() }
+                    Button(L.choose) { vm.pickOutputDirectory() }
                 }
             }
             .padding(6)
         }
     }
 
-    // MARK: 打包按钮
+    // MARK: Build button
 
     private var buildSection: some View {
         HStack {
             Spacer()
             if vm.isBuilding { ProgressView().scaleEffect(0.8) }
-            Button(vm.isBuilding ? "正在打包…" : "开始打包 .app") { vm.build() }
+            Button(vm.isBuilding ? L.building : L.buildButton) { vm.build() }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .disabled(vm.isBuilding || vm.executablePath.isEmpty)
@@ -319,13 +335,13 @@ struct ContentView: View {
         }
     }
 
-    // MARK: 日志
+    // MARK: Log
 
     private var logSection: some View {
-        GroupBox("日志") {
+        GroupBox(L.logTitle) {
             ScrollViewReader { proxy in
                 ScrollView {
-                    Text(vm.log.isEmpty ? "（打包过程输出会显示在这里）" : vm.log)
+                    Text(vm.log.isEmpty ? L.logPlaceholder : vm.log)
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(vm.log.isEmpty ? .secondary : .primary)
                         .frame(maxWidth: .infinity, alignment: .leading)
